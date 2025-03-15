@@ -1,108 +1,103 @@
-import os 
-import sys 
-import math 
-import glob 
-import cv2 
-import albumentations  as A 
-import numpy as np 
-import pandas as pd 
-from sklearn.preprocessing import LabelEncoder as LabelEncoder 
+import cv2
+import os
+import numpy as np
+import random
+import json
+from torch.utils.data.dataset import Dataset
+from torch.utils.data import Dataset
+from torch.utils.data import  DataLoader
+from tqdm import tqdm
+from typing import *
+import shutil
 
-from imageio.v3 import imread 
-from PIL import Image 
 
-import torch
-import torch.utils.data as data 
+from models.common import *
+from utils import *
+from loss import *
 
-from utils import Data_Augmentation, LabelGeneration
 
-class OCTADataset(data.Dataset):
-    def __init__(self, train=True, subfolder = 'train/image', lblenc = None, maskfolder = 'train/label', augmen = None):
+
+import datetime
+t = str(datetime.datetime.now()).split(".")[0]
+t = t.replace(":",".")
+log_root = f"log/{t}"
+writer = SummaryWriter(log_dir=log_root)
+
+path_ROSSA = "dataset/ROSSA"
+
+def prepareDatasets():
+    all_datasets = {}
+    all_datasets['ROSSA'] = {
+        "train":SegmentationDataset([os.path.join(path_ROSSA, x) for x in ["train_manual", "train_sam"]], ),
+        "val":SegmentationDataset(os.path.join(path_ROSSA, "val")),
+        "test":SegmentationDataset(os.path.join(path_ROSSA,"test"))
+    }
+    #// More datasets can be added here......
+    return all_datasets
+
+class SegmentationDataset(Dataset):
+    def __init__(self, ls_path_dataset, start=0, end=1) -> None:
         super().__init__()
-        self.train = train 
-        self.lblenc = lblenc 
-        self.augmen = augmen 
-        self.subfolder = subfolder
-        self.maskfolder = maskfolder
 
-        if self.train:
-            self.data = glob.glob(os.path.join('ROSSA','data','train','image','*.png'))
-        else:
-            self.data = glob.glob(os.path.join('ROSSA', 'data','val','image','*.png')) 
 
+        if not isinstance(ls_path_dataset, list):
+            ls_path_dataset = [ls_path_dataset]
+
+        self.ls_item = []
+        for path_dataset in ls_path_dataset:
+            path_dir_image = os.path.join(path_dataset, "image")
+            path_dir_label = os.path.join(path_dataset, "label")
+
+
+            ls_file = os.listdir(path_dir_image)
+            
+            for name in ls_file:
+                path_image = os.path.join(path_dir_image, name)
+                path_label = os.path.join(path_dir_label, name)
+                assert os.path.exists(path_image)
+                assert os.path.exists(path_label)
+                self.ls_item.append({
+                    "name":name,
+                    "path_image":path_image,
+                    "path_label":path_label,
+                })  
+        
+        random.seed(0)
+        random.shuffle(self.ls_item)
+        start = int(start * len(self.ls_item))
+        end = int(end * len(self.ls_item))
+        self.ls_item = self.ls_item[start:end]
+          
 
     def __len__(self):
-        return len(self.data) 
-    
-    def Readimage(self, imageName):
-        image = np.array(imread(imageName)).astype(np.float32)
-        return image
-    
-    def PreprocessImage(self, image):
-        image = np.float32(image) / 255.0
-        return np.expand_dims(image,-1)
+        return len(self.ls_item)
 
-    def ReadMask(self, maskName):
-        image = imread(maskName) 
-        h, w = image.shape 
-        image = image.ravel() 
-        image = self.lblenc.transform(image)
-        image = image.reshape((h, w)) 
-        return image
+    def __getitem__(self, index):
+        index = index % len(self)
+        item = self.ls_item[index]
 
-    def __getitem__(self,id):
-        imageName  = self.data[id]
-        maskName   = imageName.replace(self.subfolder, self.maskfolder) 
-        
-        image = self.Readimage(imageName)
-        mask = self.ReadMask(maskName)
-        
-        if self.augmen: 
-            aug = self.augmen(image=image, mask=mask)
-            Img = aug['image']
-            mask = aug['mask']
-        else:
-            Img  = image 
-            mask = mask 
-        
-        Img = self.PreprocessImage(Img)
-        Img = Img.transpose(2, 0, 1)
-        mask =np.expand_dims( mask, axis=0)
-        Img = torch.from_numpy(Img).float() 
-        mask = torch.from_numpy(mask).long() 
-        return Img, mask 
+        name = item['name']
+        path_image = item['path_image']
+        path_label = item['path_label']
+
+        image = cv2.imread(path_image,cv2.IMREAD_GRAYSCALE).astype("float32")
+        label = cv2.imread(path_label, cv2.IMREAD_GRAYSCALE).astype("float32")
+
+        image /= 255
+        label /= 255
+
+        # 填充到32的倍数
+        pad_x = (image.shape[1] // 32 + 1) * 32 - image.shape[1]
+        pad_x %= 32
+        pad_y = (image.shape[0] // 32 + 1) * 32 - image.shape[0]
+        pad_y %= 32
+        image = cv2.copyMakeBorder(image, pad_y//2, pad_y//2, pad_x//2, pad_x//2, cv2.BORDER_CONSTANT, value=0)
+        label = cv2.copyMakeBorder(label, pad_y//2, pad_y//2, pad_x//2, pad_x//2, cv2.BORDER_CONSTANT, value=0)
+
+        image = image.reshape((1, image.shape[0], image.shape[1]))
+        label = label.reshape((1,label.shape[0], label.shape[1]))
 
 
-if __name__ == '__main__':
+       
+        return name, image, label
 
-    os.system('clear')
-    
-    subfolder= 'train/image'
-    maskfolder = 'train/label'
-    dataType = 'train'
-    #from utils import LabelGeneration, Data_Augmentation 
-
-    encoder=LabelGeneration(subfolder=maskfolder, path= os.path.join('ROSSA', 'dataset')) 
-    Traindata_aug = Data_Augmentation(dataType=dataType)
-    Testdata_aug = Data_Augmentation(dataType='test')
-    train_dataset = OCTADataset( lblenc=encoder, subfolder=subfolder , train=True, augmen =Traindata_aug)  
-    test_dataset  = OCTADataset(lblenc=encoder, subfolder=subfolder , train=False, augmen =Testdata_aug)
-    print(len(train_dataset), len(test_dataset),Traindata_aug, Testdata_aug, sep='\n')
-
-
-   
-    for i in range(len(train_dataset)):
-        Img, mask = train_dataset[i]
-
-        print(Img.max(), Img.min(), Img.shape, mask.shape, mask.min(), mask.max()) 
-        break 
-
-    Img = np.uint8(Img.numpy().squeeze() * 255.0)
-    Mask = np.uint8(mask.numpy().squeeze() *255.0)
-    print(Img.shape, Mask.shape, Img.max())
-    Img = Image.fromarray(Img) 
-    print(Img.size, Img.getextrema(), type(Img))
-    Mask = Image.fromarray(Mask) 
-
-    Img.show() 
-    Mask.show()
