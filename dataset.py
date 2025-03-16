@@ -86,7 +86,7 @@ class SegmentationDataset(Dataset):
         image /= 255
         label /= 255
 
-        # 填充到32的倍数
+#normalizing the images
         pad_x = (image.shape[1] // 32 + 1) * 32 - image.shape[1]
         pad_x %= 32
         pad_y = (image.shape[0] // 32 + 1) * 32 - image.shape[0]
