@@ -3,61 +3,21 @@ import torch.nn.functional as F
 import torch
 from timm.models.layers import  DropPath
 #from swin_transformer import SwinTransformerBlock  # Importing Swin Transformer
-class WindowAttention(nn.Module):
-    """ Window based multi-head self attention (W-MSA) module with relative position bias """
-    def __init__(self, dim, num_heads, window_size=7):
+class LKA(nn.Module):
+    def __init__(self, dim):
         super().__init__()
-        self.dim = dim
-        self.num_heads = num_heads
-        self.window_size = window_size
-        self.scale = (dim // num_heads) ** -0.5
-       
-        self.qkv = nn.Linear(dim, dim * 3, bias=True)
-        self.proj = nn.Linear(dim, dim)
-
-
+        self.conv0 = nn.Conv2d(dim, dim, kernel_size=5, padding=2, groups=dim)
+        self.conv_spatial = nn.Conv2d(dim, dim, kernel_size=7, stride=1, padding=9, groups=dim, dilation=3)
+        self.conv1 = nn.Conv2d(dim, dim, kernel_size=1)
+   
     def forward(self, x):
-        B, C, H, W = x.shape
-        x = x.view(B, C, -1).permute(0, 2, 1)  # Flatten spatial dims
-        qkv = self.qkv(x).reshape(B, -1, 3, self.num_heads, C // self.num_heads).permute(2, 0, 3, 1, 4)
-        q, k, v = qkv[0], qkv[1], qkv[2]
-        attn = (q @ k.transpose(-2, -1)) * self.scale
-        attn = attn.softmax(dim=-1)
-        x = (attn @ v).transpose(1, 2).reshape(B, -1, C)
-        x = self.proj(x)
-        x = x.view(B, C, H, W)  # Reshape back to (B, C, H, W)
-        return x
+        u = x.clone()
+        attn = self.conv0(x)
+        attn = self.conv_spatial(attn)
+        attn = self.conv1(attn)
+        return u * attn.sigmoid()
 
 
-class SwinTransformerBlock(nn.Module):
-    def __init__(self, dim, num_heads=4):
-        super().__init__()
-        self.norm1 = nn.LayerNorm(dim)
-        self.attn = WindowAttention(dim, num_heads)
-        self.norm2 = nn.LayerNorm(dim)
-        self.mlp = nn.Sequential(
-            nn.Linear(dim, 4 * dim),
-            nn.GELU(),
-            nn.Linear(4 * dim, dim)
-        )
-
-
-    def forward(self, x):
-        shortcut = x
-        x = x.permute(0, 2, 3, 1)  # (N, C, H, W) → (N, H, W, C)
-        x = self.norm1(x)
-        x = x.permute(0, 3, 1, 2)  # Back to (N, C, H, W)
-        x = self.attn(x)
-        x = shortcut + x  # Residual connection
-
-
-        shortcut = x
-        x = x.permute(0, 2, 3, 1)
-        x = self.norm2(x)
-        x = self.mlp(x)
-        x = x.permute(0, 3, 1, 2)
-        x = shortcut + x
-        return x
 
 
 
@@ -72,6 +32,8 @@ class ConvBlock(nn.Module):
         exit(-1)
 
 
+
+
 class  ResidualBlock(ConvBlock):
     expansion = 1 # 扩展系数
     def init(self, in_channels, out_channels, stride, k_size, dilation):
@@ -83,9 +45,13 @@ class  ResidualBlock(ConvBlock):
         self.the_bn1 = nn.BatchNorm2d(in_channels)
 
 
+
+
         self.conv2 = nn.Conv2d(out_channels, out_channels, kernel_size=k_size,
                                stride=1, padding=p, bias=False, dilation=dilation)
         self.bn2 = nn.BatchNorm2d(out_channels)
+
+
 
 
         self.shortcut = nn.Sequential()
@@ -98,8 +64,12 @@ class  ResidualBlock(ConvBlock):
             )
 
 
+
+
     def forward(self, x):
         residual = self.shortcut(x)
+
+
 
 
         x = F.relu(self.bn1(self.conv1(x)))
@@ -109,8 +79,14 @@ class  ResidualBlock(ConvBlock):
         # return x + residual
 
 
+
+
         x = x + residual
         return nn.ReLU()(x)
+
+
+
+
 
 
 
@@ -123,10 +99,14 @@ class RecurrentBlock(nn.Module):
         super(RecurrentBlock, self).__init__()
 
 
+
+
         self.t = t
         self.conv = nn.Sequential(
             nn.Conv2d(out_ch, out_ch, kernel_size=k_size, stride=1, padding=k_size//2, bias=False, groups=groups)
         )
+
+
 
 
     def forward(self, x):
@@ -135,6 +115,8 @@ class RecurrentBlock(nn.Module):
                 x1 = self.conv(x)
             x1 = self.conv(x + x1)
         return x1
+
+
 
 
 class RRCNNBlock(ConvBlock):
@@ -165,6 +147,10 @@ class RRCNNBlock(ConvBlock):
 
 
 
+
+
+
+
 class RecurrentConvNeXtBlock(nn.Module):
     def __init__(self, dim, drop_path=0., layer_scale_init_value=1e-6):
         super().__init__()
@@ -177,6 +163,9 @@ class RecurrentConvNeXtBlock(nn.Module):
        
         self.gamma = nn.Parameter(layer_scale_init_value * torch.ones((dim)), requires_grad=True) if layer_scale_init_value > 0 else None
         self.drop_path = DropPath(drop_path) if drop_path > 0. else nn.Identity()
+        self.lka = LKA(dim)  # Integrating LKA
+
+
 
 
     def forward(self, x):
@@ -189,13 +178,21 @@ class RecurrentConvNeXtBlock(nn.Module):
         x = self.pwconv2(x)
 
 
+
+
         if self.gamma is not None:
             #print(f"gamma shape: {self.gamma.shape}, x shape: {x.shape}")
             #print(f"gamma shape after reshaping: {self.gamma.view(1, -1, 1, 1).shape}")
             #print(f"x shape before multiplication: {x.shape}")
 
 
+
+
             x = self.gamma.view(1, -1, 1, 1) * x
+
+
+
+
 
 
 
@@ -226,6 +223,8 @@ class ConvNeXtBlock(nn.Module):
         self.drop_path = DropPath(drop_path) if drop_path > 0. else nn.Identity()
 
 
+
+
     def forward(self, x):
         input = x
         x = self.dwconv(x)
@@ -237,6 +236,8 @@ class ConvNeXtBlock(nn.Module):
         if self.gamma is not None:
             x = self.gamma * x
         x = x.permute(0, 3, 1, 2) # (N, H, W, C) -> (N, C, H, W)
+
+
 
 
         x = input + self.drop_path(x)
@@ -266,16 +267,6 @@ class LayerNorm(nn.Module):
             x = (x - u) / torch.sqrt(s + self.eps)
             x = self.weight[:, None, None] * x + self.bias[:, None, None]
             return x
-
-
-
-
-
-
-
-
-
-
 
 
 
