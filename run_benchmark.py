@@ -13,7 +13,6 @@ all_dataset = prepareDatasets()
 print(f"Models: {[name for name in models]}")
 print(f"Datasets: {[name for name in all_dataset]}")
 
-# 自检：尝试加载每个模型一次，以确保每个模型都能加载
 print("Trying to load each model...")
 for name_model in models:
     model:nn.Module = models[name_model]()
@@ -24,20 +23,6 @@ root_result = "result"
 if not os.path.exists(root_result):
     os.mkdir(root_result)
 
-id_card = 0
-# 手动选择显卡
-count_card = torch.cuda.device_count()
-if count_card > 1:
-    while True:
-        s = input(f"Please choose a video card number (0-{count_card-1}): ")
-        if s.isdigit():
-            id_card = int(s)
-            if id_card >= 0 and id_card < count_card:
-                break
-        print("Invalid input!")
-        continue
-device_cuda = torch.device(f'cuda:{id_card}' if torch.cuda.is_available() else 'cpu')
-print(f"\n\nVideo Card {id_card} will be used.")
 
 
         
@@ -45,11 +30,7 @@ for name_model in models:
     root_result_model = os.path.join(root_result, name_model)
     if not os.path.exists(root_result_model):
         os.mkdir(root_result_model)
-    # foo = models[name_model]()
-    # total = sum([param.nelement() for param in foo.parameters()])
-    # print("Model:{}, Number of parameter: {:.3f}M".format(name_model, total/1e6))
-    # continue
-    # 在各个训练集上训练
+
     for name_dataset in all_dataset:
         dataset = all_dataset[name_dataset]
         
